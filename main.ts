@@ -4,36 +4,29 @@ import { config } from './config.js';
 const API_KEY = 'API_KEY';
 
 interface Message {
-  role: string;
+  role: 'user' | 'model';
   content: string;
 }
 
 interface Completion {
-  Content: string | null;
-  TokenUsage: number | undefined;
+  Content: string;
+  TokenUsage?: number;
 }
 
-interface ConnectorResponse {
-  Completions: Completion[];
-  ModelType: string;
+interface ErrorCompletion {
+  Error: string;
 }
 
-interface GeminiError {
-  error: {
-    message: string;
-  };
-}
-
-const mapToResponse = (outputs: Array<Completion>, model: string): ConnectorResponse => {
-  return {
-    Completions: outputs,
-    ModelType: model,
-  };
+type ConnectorResponse = {
+  Completions: Array<Completion | ErrorCompletion>;
+  ModelType?: string;
 };
 
-const mapErrorToCompletion = (error: GeminiError, model: string): Message => {
-  const errorMessage = error.error.message;
-  return { role: 'model', content: errorMessage };
+const mapErrorToCompletion = (error: unknown): ErrorCompletion => {
+  const errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+  return {
+    Error: errorMessage,
+  };
 };
 
 async function main(
@@ -41,45 +34,51 @@ async function main(
   prompts: string[],
   properties: Record<string, unknown>,
   settings: Record<string, unknown>,
-) {
-  const genAI = new GoogleGenerativeAI(settings['API_KEY'] as string);
-  const geminiModel = genAI.getGenerativeModel({ model: model });
-  const outputs: Completion[] = [];
-  let chatHistory: Message[] = [];
-  let chat = geminiModel.startChat({
-    history: chatHistory.map((msg) => ({
-      role: msg.role as 'user' | 'model',
-      parts: msg.content,
-    })),
-    generationConfig: {
-      maxOutputTokens: properties['maxOutputTokens'] as number,
-      temperature: properties['temperature'] as number,
-      topP: properties['topP'] as number,
-      topK: properties['topK'] as number,
-    },
-  });
-
+): Promise<ConnectorResponse> {
   try {
-    for (let prompt of prompts) {
+    const { ...restProperties } = properties;
+
+    const genAI = new GoogleGenerativeAI(settings?.[API_KEY] as string);
+    const geminiModel = genAI.getGenerativeModel({
+      model: model,
+      ...restProperties
+    });
+
+    const outputs: Array<Completion | ErrorCompletion> = [];
+    let chatHistory: Message[] = [];
+    let chat = geminiModel.startChat({
+      history: chatHistory.map((msg) => ({
+        role: msg.role,
+        parts: [{ text: msg.content }],
+      })),
+    });
+
+    for (const prompt of prompts) {
       try {
         chatHistory.push({ role: 'user', content: prompt });
         const result = await chat.sendMessage(prompt);
-        const response = await result.response;
-        const text = await response.text();
-        chatHistory.push({ role: 'model', content: text });
-        outputs.push({ Content: text, TokenUsage: undefined });
+        const response = result.response;
+        const text = response.text();
 
-        console.log(`Response:`, text);
+        // Count tokens
+        const { totalTokens } = await geminiModel.countTokens(prompt);
+
+        chatHistory.push({ role: 'model', content: text });
+        outputs.push({ Content: text, TokenUsage: totalTokens });
       } catch (error) {
-        const completionWithError = mapErrorToCompletion(error as GeminiError, model);
-        chatHistory.push(completionWithError);
+        const completionWithError = mapErrorToCompletion(error);
+        outputs.push(completionWithError);
       }
     }
 
-    return mapToResponse(outputs, model);
+    return {
+      Completions: outputs,
+    };
   } catch (error) {
     console.error('Error in main function:', error);
-    return { Error: error, ModelType: model };
+    return {
+      Completions: [mapErrorToCompletion(error)],
+    };
   }
 }
 
