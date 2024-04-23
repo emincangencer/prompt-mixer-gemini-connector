@@ -1,6 +1,6 @@
 export const config = {
   connectorName: "Gemini",
-  models: ["gemini-1.0-pro", "gemini-1.5-pro-latest"],
+  models: ["gemini-pro", "gemini-1.0-pro", "gemini-1.5-pro-latest"],
   properties: [
     {
       id: "maxOutputTokens",
